@@ -34,13 +34,17 @@ spec:
 
   # Cluster-scoped resources: the app team has NO business creating
   # ClusterRoles, CustomResourceDefinitions, or PersistentVolumes.
-  # Empty whitelist = full deny. Platform team manages those.
-  clusterResourceWhitelist: []
+  # Namespace is the one exception -- it's cluster-scoped in
+  # Kubernetes (unlike everything else base/ ships), and
+  # base/00-namespace.yaml + syncOptions: [CreateNamespace=true]
+  # both need it whitelisted here, not in namespaceResourceWhitelist.
+  # Everything else stays denied. Platform team manages those.
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
 
   # Namespace-scoped resources: only the kinds the manifests
   # actually use. Anything else is denied.
   namespaceResourceWhitelist:
-    - { group: "", kind: Namespace }
     - { group: "", kind: Service }
     - { group: "", kind: ConfigMap }
     - { group: "", kind: Secret }

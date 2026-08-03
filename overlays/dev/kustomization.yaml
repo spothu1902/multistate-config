@@ -23,10 +23,13 @@ commonAnnotations:
 # Image-tag rewrite -- the CI _bump-config workflow (Task 4/T5)
 # rewrites the tag on every green main build; Kustomize merges it
 # onto the rendered Deployment without touching the base manifest.
+# The image lives in a private ECR repo (see application repo's
+# CLAUDE.md), never docker.io -- base/10-...deployment.yaml's
+# `uptimecrew/multistate-api:0.1.0` is rewritten to the full ECR URI.
 # fd677fa is the latest real tag pushed by CI as of this bootstrap.
 images:
   - name: uptimecrew/multistate-api
-    newName: uptimecrew/multistate-api
+    newName: 267660182014.dkr.ecr.us-east-1.amazonaws.com/uptimecrew/multistate-api
     newTag: fd677fa
 
 # Per-env replica count -- dev runs at one replica.

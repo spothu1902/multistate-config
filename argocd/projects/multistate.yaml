@@ -20,7 +20,7 @@ spec:
   # Narrowed to exactly this gitops repo -- a wildcard here is
   # indistinguishable from leaving the project in "default".
   sourceRepos:
-    - https://github.com/AI-Native-2026-06-24-Intuit-A/multistate-config.git
+    - https://github.com/spothu1902/multistate-config.git
 
   # WHICH (cluster, namespace) pairs are legal? Explicit per-env
   # entries, never {server: '*', namespace: '*'}.

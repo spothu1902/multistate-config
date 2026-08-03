@@ -1,0 +1,30 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: multistate-api
+  namespace: multistate-dev
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: multistate-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: multistate-api
+  namespaceSelector:
+    matchNames: [multistate-dev]
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 15s
+      scrapeTimeout: 10s
+      metricRelabelings:
+        # Micrometer tags the no-exception case exception="none" (a sentinel
+        # string, not an empty label), so a bare ".+" match against exception
+        # would drop every http_server_requests_seconds series, including
+        # successful requests. Java exception class names always contain a
+        # dot (e.g. "java.lang.NullPointerException"); "none" does not, so
+        # requiring a dot in the match reliably excludes the sentinel while
+        # still dropping series carrying a real exception class.
+        - sourceLabels: [__name__, exception]
+          regex: "http_server_requests_seconds[^;]*;[^;]*\\.[^;]*"
+          action: drop

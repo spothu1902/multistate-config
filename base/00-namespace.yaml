@@ -1,0 +1,14 @@
+# base/00-namespace.yaml - the bounded blast radius for multistate-api.
+#
+# ResourceQuota + LimitRange from the application repo's W5 D3 manifest
+# are deliberately OMITTED here: the multistate AppProject's
+# namespaceResourceBlacklist (Task 2) denies both kinds -- quota/limit
+# management is platform-team-owned, not something the app team's
+# GitOps sync should apply. The platform team provisions those
+# out-of-band per namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multistate-dev
+  labels:
+    app.kubernetes.io/part-of: multistate

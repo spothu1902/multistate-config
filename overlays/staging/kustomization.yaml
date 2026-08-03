@@ -32,6 +32,25 @@ patches:
       - op: replace
         path: /data/LOGGING_LEVEL_ROOT
         value: INFO
+      # base/30-...configmap.yaml hardcodes every backend hostname to
+      # *.multistate-dev.svc.cluster.local; every overlay must rewrite
+      # these or staging/prod pods reach across namespaces into dev's
+      # backing services (or find nothing, since dev's aren't there either).
+      - op: replace
+        path: /data/SPRING_DATASOURCE_URL
+        value: jdbc:postgresql://postgres.multistate-staging.svc.cluster.local:5432/multistate_dev
+      - op: replace
+        path: /data/SPRING_DATA_MONGODB_URI
+        value: mongodb://mongo.multistate-staging.svc.cluster.local:27017/multistate
+      - op: replace
+        path: /data/SPRING_DATA_REDIS_HOST
+        value: redis.multistate-staging.svc.cluster.local
+      - op: replace
+        path: /data/SPRING_KAFKA_BOOTSTRAP_SERVERS
+        value: kafka.multistate-staging.svc.cluster.local:9092
+      - op: replace
+        path: /data/OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otelcol.multistate-staging.svc.cluster.local:4317
   # Namespace must land before Deployment/Service/etc. -- see
   # overlays/dev/kustomization.yaml for the full rationale.
   - target:

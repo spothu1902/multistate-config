@@ -52,3 +52,13 @@ patches:
       - op: replace
         path: /spec/namespaceSelector/matchNames
         value: [multistate-staging]
+  # base/60-...ingress.yaml hardcodes host: multistate.dev.uptimecrew.internal;
+  # every overlay must use a unique host or ingress-nginx's admission
+  # webhook rejects the apply as a host+path collision with dev's Ingress.
+  - target:
+      kind: Ingress
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: multistate.staging.uptimecrew.internal

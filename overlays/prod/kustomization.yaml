@@ -1,0 +1,58 @@
+# overlays/prod/kustomization.yaml
+# Same shape as overlays/dev/ -- see that file for the full rationale
+# on each knob. Prod runs 3 replicas, WARN logging (quietest), its own
+# namespace, and is gated by the AppProject's Friday-Monday syncWindow
+# deny block (Task 2) -- automated sync is still configured here, but
+# the project-level window blocks the controller from acting on it
+# outside the freeze; manualSync stays available for on-call.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: multistate-prod
+
+# fd677fa is the latest real tag pushed by CI as of this bootstrap;
+# the CI _bump-config workflow (Task 4/T5) rewrites it per env.
+images:
+  - name: uptimecrew/multistate-api
+    newName: 267660182014.dkr.ecr.us-east-1.amazonaws.com/uptimecrew/multistate-api
+    newTag: fd677fa
+
+# Prod runs at 3 replicas -- the full HA count from the base Deployment.
+replicas:
+  - name: multistate-api
+    count: 3
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: prod
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: WARN
+  # Namespace must land before Deployment/Service/etc. -- see
+  # overlays/dev/kustomization.yaml for the full rationale.
+  - target:
+      kind: Namespace
+      name: multistate-prod
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          argocd.argoproj.io/sync-wave: "-1"
+  # base/70-...servicemonitor.yaml hardcodes namespaceSelector to
+  # multistate-dev; every overlay must rewrite it to its own
+  # namespace or the ServiceMonitor watches the wrong namespace.
+  - target:
+      kind: ServiceMonitor
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/namespaceSelector/matchNames
+        value: [multistate-prod]

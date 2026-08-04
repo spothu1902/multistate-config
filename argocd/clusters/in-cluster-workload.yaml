@@ -1,0 +1,38 @@
+# argocd/clusters/in-cluster-workload.yaml
+# Registers the in-cluster target as a labelled Argo CD cluster Secret.
+#
+# Argo CD treats "https://kubernetes.default.svc" as an implicit target
+# with NO backing Secret by default -- Applications can deploy to it
+# without one. But the ApplicationSet matrix generator's `clusters`
+# inner generator (Task 3) can only select against clusters that DO
+# have a registered Secret carrying argocd.argoproj.io/secret-type: cluster,
+# so this Secret exists purely to give that generator something to match.
+#
+# No credentials are stored here: an empty tlsClientConfig on the
+# in-cluster server means the repo-server/application-controller falls
+# back to its own in-pod ServiceAccount token, same as the implicit
+# in-cluster target does. Safe to commit.
+#
+# On the shared capstone cluster (multi-cluster, real credentials),
+# the platform team creates the equivalent Secret per remote cluster
+# via `argocd cluster add` and applies the same
+# uptimecrew.example.internal/tier=workload label -- this file is the
+# reference shape, not something copy-pasted with real tokens in it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: in-cluster-workload
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+    uptimecrew.example.internal/tier: workload
+type: Opaque
+stringData:
+  name: in-cluster
+  server: https://kubernetes.default.svc
+  config: |
+    {
+      "tlsClientConfig": {
+        "insecure": false
+      }
+    }

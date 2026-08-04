@@ -1,0 +1,94 @@
+# argocd/applicationsets/multistate-api-envs.yaml
+# Templates one Application per env. The list generator drives
+# (env, overlay, namespace, wave) tuples; the inner clusters generator
+# scopes the fleet to clusters registered with the workload label --
+# a matrix generator now, even with one cluster today, so adding a
+# second cluster later is a label + Secret, not a rewritten pipeline.
+# Adding a new env (e.g. canary) is a one-line entry in the elements list.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: multistate-api-envs
+  namespace: argocd
+spec:
+  # If an env falls out of the matrix, KEEP the existing
+  # Application + workload running. A human re-reviews before any
+  # teardown. The default (delete) is the wrong default for prod.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+
+  generators:
+    - matrix:
+        generators:
+          # Inner generator A: explicit env list.
+          - list:
+              elements:
+                - env: dev
+                  overlay: overlays/dev
+                  namespace: multistate-dev
+                  wave: "0"
+                - env: staging
+                  overlay: overlays/staging
+                  namespace: multistate-staging
+                  wave: "1"
+                - env: prod
+                  overlay: overlays/prod
+                  namespace: multistate-prod
+                  wave: "2"
+          # Inner generator B: every cluster tagged tier=workload.
+          # The local k3d cluster's in-cluster target has no Secret by
+          # default (Argo CD treats "in-cluster" as implicit); this repo's
+          # Task 3 registers one explicitly (argocd/clusters/in-cluster-workload.yaml)
+          # so the clusters generator has something to select against.
+          - clusters:
+              selector:
+                matchLabels:
+                  uptimecrew.example.internal/tier: workload
+
+  template:
+    metadata:
+      # Application names MUST be unique; compose from the params.
+      name: multistate-api-{{env}}
+      namespace: argocd
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      annotations:
+        # Sync-wave on the generated Application orders the
+        # cross-env promotion: dev syncs first, staging second,
+        # prod third. Within a single Application, sync-wave
+        # annotations on individual resources (Namespace before
+        # Deployment) live in the Kustomize overlay.
+        argocd.argoproj.io/sync-wave: "{{wave}}"
+      labels:
+        env: "{{env}}"
+        team: multistate
+    spec:
+      project: multistate
+      source:
+        repoURL: https://github.com/spothu1902/multistate-config.git
+        path: "{{overlay}}"
+        targetRevision: w6d2-implementation
+      destination:
+        server: "{{server}}"
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          # PROD-ONLY EXCEPTION (left as a comment for the engineer
+          # to make a deliberate call): if the cohort decides prod
+          # should require manual sync, drop the automated stanza
+          # for env: prod via templatePatch. See GITOPS.md. For now,
+          # the AppProject's syncWindows deny block (Task 2) is the
+          # only thing gating prod auto-sync (Fri 17:00-Mon 05:00 UTC).
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

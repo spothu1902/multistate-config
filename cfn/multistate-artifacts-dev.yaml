@@ -1,0 +1,116 @@
+# cfn/multistate-artifacts-dev.yaml
+# TASK 3 S3 artefact bucket -- holds W5 D4 SAM artefacts and Argo
+# CD config snapshots. Hardened defaults from day one. Both
+# DeletionPolicy: Retain AND UpdateReplacePolicy: Retain so that
+# neither a stack delete nor a property-change replacement ever
+# destroys live data.
+#
+# Deploy with the ChangeSet flow:
+#   aws cloudformation create-change-set \
+#     --stack-name multistate-artifacts-dev-sravani-pothu \
+#     --change-set-name initial --change-set-type CREATE \
+#     --template-body file://cfn/multistate-artifacts-dev.yaml \
+#     --parameters ParameterKey=EnvName,ParameterValue=dev \
+#     --region us-east-1
+#   aws cloudformation describe-change-set ... # review
+#   aws cloudformation execute-change-set ...
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate artefact bucket -- KMS, PAB, lifecycle, deny-non-TLS.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment.
+  BucketNameSuffix:
+    Type: String
+    Default: sravani-pothu
+    Description: >-
+      Disambiguates the bucket name globally (S3 bucket names are
+      unique across ALL AWS accounts, not just this one; the bare
+      name uptimecrew-multistate-artifacts-dev is already taken).
+
+Resources:
+  MultistateArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: >-
+              Artefact bucket only stores CFN template / SAM / Argo CD
+              config snapshots in a training account; a dedicated
+              access-log bucket is disproportionate overhead for this
+              scope (same rationale as the Task 1 bootstrap bucket).
+    Properties:
+      BucketName: !Sub "uptimecrew-multistate-artifacts-${EnvName}-${BucketNameSuffix}-${AWS::AccountId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: alias/aws/s3
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls:       true
+        BlockPublicPolicy:     true
+        IgnorePublicAcls:      true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: tier-then-archive
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+              - StorageClass: GLACIER_IR
+                TransitionInDays: 365
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  ArtefactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MultistateArtifactsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonTLS
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt MultistateArtifactsBucket.Arn
+              - !Sub "${MultistateArtifactsBucket.Arn}/*"
+            Condition:
+              Bool: {"aws:SecureTransport": "false"}
+          - Sid: DenyUnencryptedPut
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "${MultistateArtifactsBucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption": aws:kms
+
+Outputs:
+  ArtefactBucketName:
+    Value: !Ref MultistateArtifactsBucket
+    Export: {Name: !Sub "${AWS::StackName}-BucketName"}
+  ArtefactBucketArn:
+    Value: !GetAtt MultistateArtifactsBucket.Arn
+    Export: {Name: !Sub "${AWS::StackName}-BucketArn"}

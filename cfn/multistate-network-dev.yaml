@@ -57,6 +57,7 @@ Resources:
         - {Key: Name,    Value: !Sub "multistate-${EnvName}-vpc"}
         - {Key: Env,     Value: !Ref EnvName}
         - {Key: Project, Value: multistate}
+        - {Key: Owner,   Value: sravani-pothu}
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway

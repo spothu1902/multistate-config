@@ -57,6 +57,12 @@ Parameters:
       cross-stack wiring resolves correctly.
 
 Conditions:
+  # ShouldCreateDbInstance: gates the actual RDS instance behind the
+  # CreateDbInstance parameter (default false). An AWS Organization
+  # SCP in this shared account denies rds:CreateDBInstance outright;
+  # DbSubnetGroup/DbSecurityGroup/AppToDbEgress stay unconditional
+  # since they cost nothing and already prove the cross-stack
+  # !ImportValue wiring resolves correctly.
   ShouldCreateDbInstance: !Equals [!Ref CreateDbInstance, "true"]
 
 Resources:

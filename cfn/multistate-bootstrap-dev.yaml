@@ -129,6 +129,16 @@ Resources:
             reason: >-
               Explicit RoleName required so GitHub Actions'
               role-to-assume references a stable, known ARN.
+          - id: W11
+            reason: >-
+              cloudformation:ValidateTemplate has no resource-level
+              permissions in AWS IAM -- it validates a template body
+              only, before any stack or changeSet ARN exists -- so
+              Resource: "*" is the only valid scope for that one
+              action. Confirmed via a real AccessDenied in CI when it
+              was scoped to a stack/changeSet ARN pattern instead.
+              Every other action on this role stays scoped to
+              stack/multistate-* and changeSet/multistate-* ARNs.
     Properties:
       RoleName: !Sub "multistate-api-cfn-deploy-${RoleNameSuffix}"
       AssumeRolePolicyDocument:
@@ -141,12 +151,23 @@ Resources:
             Condition:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": sts.amazonaws.com
-              # StringLike (not StringEquals): branch + PR refs differ
-              # per workflow run; the org/repo prefix is exact.
+              # StringLike (not StringEquals): branch + PR refs differ per
+              # workflow run. Four entries, not two: GitHub's OIDC `sub`
+              # claim for a repo owned by a personal account (as opposed
+              # to an organization) appends numeric user/repo IDs --
+              # repo:<org>@<userId>/<repo>@<repoId>:pull_request -- not
+              # the plain repo:<org>/<repo>:pull_request format used for
+              # org-owned repos. Confirmed via a real rejected
+              # AssumeRoleWithWebIdentity call in CloudTrail against
+              # this exact role. The wildcard variants cover both shapes
+              # so the role works regardless of which kind of GitHub
+              # account owns GitHubOrg/GitHubRepo.
               StringLike:
                 "token.actions.githubusercontent.com:sub":
                   - !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
                   - !Sub "repo:${GitHubOrg}/${GitHubRepo}:pull_request"
+                  - !Sub "repo:${GitHubOrg}*/${GitHubRepo}*:ref:refs/heads/main"
+                  - !Sub "repo:${GitHubOrg}*/${GitHubRepo}*:pull_request"
       Policies:
         - PolicyName: cfn-deploy-narrow
           PolicyDocument:
@@ -164,13 +185,22 @@ Resources:
                   - cloudformation:DescribeStackEvents
                   - cloudformation:DescribeStackResources
                   - cloudformation:GetTemplate
-                  - cloudformation:ValidateTemplate
                   - cloudformation:DetectStackDrift
                   - cloudformation:DescribeStackDriftDetectionStatus
                   - cloudformation:DescribeStackResourceDrifts
                 Resource:
                   - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/multistate-*"
                   - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/multistate-*"
+              # cloudformation:ValidateTemplate has no resource-level
+              # permissions (it validates a template body only, before
+              # any stack/changeSet ARN exists) -- AWS requires
+              # Resource: "*" for it; scoping it under stack/changeSet
+              # ARNs above silently never matches. Confirmed via a real
+              # AccessDenied in CI before this fix.
+              - Sid: CfnValidateTemplate
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: "*"
               # S3 read on the bootstrap bucket (for stored templates).
               - Sid: BootstrapBucketRead
                 Effect: Allow

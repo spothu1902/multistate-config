@@ -20,7 +20,7 @@ spec:
   project: multistate
 
   source:
-    repoURL: https://github.com/AI-Native-2026-06-24-Intuit-A/multistate-config.git
+    repoURL: https://github.com/spothu1902/multistate-config.git
     path: overlays/dev
     targetRevision: main
 

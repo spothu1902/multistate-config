@@ -1,0 +1,32 @@
+# argocd-system/argocd-cm-patch.yaml
+# Patches the built-in argocd-cm ConfigMap (NOT a from-scratch object --
+# apply with `kubectl patch` or a server-side apply, never `kubectl create`,
+# since argocd-cm ships with the install manifest and holds unrelated
+# settings this file must not clobber).
+#
+# WHY: Argo CD v2.11.7's structured-merge diff engine consults an
+# embedded OpenAPI schema for each Kubernetes kind. This k3d cluster's
+# K8s 1.35 Deployment status includes `.status.terminatingReplicas` (a
+# field added after that schema was generated), so every diff against
+# a live Deployment failed with:
+#   "error building typed value from live resource:
+#    .status.terminatingReplicas: field not declared in schema"
+# That ComparisonError blocked comparison entirely -- Applications sat
+# at sync=Unknown and selfHeal could never detect (let alone revert)
+# live drift, since Argo CD never got a valid diff to act on.
+#
+# FIX: resource.compareoptions: ignoreResourceStatusField: all tells
+# Argo CD to exclude .status from every resource's diff -- status is
+# observational (kubelet/controller-reported), never something GitOps
+# should reconcile toward, so ignoring it entirely is correct in
+# general, not just a workaround for this version mismatch.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+data:
+  resource.compareoptions: |
+    ignoreResourceStatusField: all

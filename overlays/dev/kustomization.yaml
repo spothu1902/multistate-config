@@ -14,19 +14,16 @@ resources:
 # metadata.namespace at build time.
 namespace: multistate-dev
 
-# Sync-wave annotation: lands this overlay's resources in wave 0
-# (default) so the ApplicationSet's cross-env promotion (Task 3)
-# orders dev before staging before prod.
-commonAnnotations:
-  argocd.argoproj.io/sync-wave: "0"
-
 # Image-tag rewrite -- the CI _bump-config workflow (Task 4/T5)
 # rewrites the tag on every green main build; Kustomize merges it
 # onto the rendered Deployment without touching the base manifest.
+# The image lives in a private ECR repo (see application repo's
+# CLAUDE.md), never docker.io -- base/10-...deployment.yaml's
+# `uptimecrew/multistate-api:0.1.0` is rewritten to the full ECR URI.
 # fd677fa is the latest real tag pushed by CI as of this bootstrap.
 images:
   - name: uptimecrew/multistate-api
-    newName: uptimecrew/multistate-api
+    newName: 267660182014.dkr.ecr.us-east-1.amazonaws.com/uptimecrew/multistate-api
     newTag: fd677fa
 
 # Per-env replica count -- dev runs at one replica.
@@ -34,8 +31,17 @@ replicas:
   - name: multistate-api
     count: 1
 
-# Per-env config patch -- override the ConfigMap entries that should
-# differ between envs (Spring profile, log level).
+# Per-env patches:
+#  - ConfigMap: Spring profile + log level differ per env.
+#  - Namespace sync-wave: the Namespace must land BEFORE the
+#    Deployment/Service/etc. on a brand-new cluster (a Deployment
+#    can't be created into a namespace that doesn't exist yet).
+#    Patched onto just the Namespace kind -- NOT commonAnnotations,
+#    which would stamp every resource in this overlay with the same
+#    wave and lose the ordering entirely. This wave orders resources
+#    WITHIN one Application; the ApplicationSet template's
+#    argocd.argoproj.io/sync-wave (dev=0/staging=1/prod=2) separately
+#    orders the three Applications relative to each other.
 patches:
   - target:
       kind: ConfigMap
@@ -47,3 +53,11 @@ patches:
       - op: replace
         path: /data/LOGGING_LEVEL_ROOT
         value: DEBUG
+  - target:
+      kind: Namespace
+      name: multistate-dev
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          argocd.argoproj.io/sync-wave: "-1"

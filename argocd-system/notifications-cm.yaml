@@ -1,0 +1,82 @@
+# argocd-system/notifications-cm.yaml
+# Wires argocd-notifications-controller to Slack. The bot token is
+# held in the argocd-notifications-secret (created out-of-band via
+# `kubectl create secret generic argocd-notifications-secret
+# --from-literal=slack-token=...` -- never committed to Git); this
+# ConfigMap declares only the triggers, templates, and the named
+# service that points at the secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # ----- Where to deliver notifications -----
+  service.slack: |
+    token: $slack-token   # resolved from argocd-notifications-secret
+
+  # ----- Triggers (when to fire) -----
+  trigger.on-sync-failed: |
+    - description: Application sync failed.
+      send:    [app-sync-failed]
+      when:    app.status.operationState.phase in ['Error', 'Failed']
+
+  trigger.on-health-degraded: |
+    - description: Application health degraded.
+      send:    [app-health-degraded]
+      when:    app.status.health.status == 'Degraded'
+
+  # NOTE: on-sync-succeeded is DELIBERATELY omitted. Subscribing
+  # every Application to it produces a deploy-firehose that humans
+  # learn to mute -- and once they mute it, they miss the failures
+  # too. Alert on bad outcomes; rely on Git history + the Argo CD UI
+  # for "what deployed when."
+
+  # ----- Templates (how to render) -----
+  template.app-sync-failed: |
+    message: |
+      {{.app.metadata.name}} sync FAILED at {{.app.status.operationState.finishedAt}}.
+      Project:   {{.app.spec.project}}
+      Revision:  {{.app.status.operationState.syncResult.revision}}
+      Phase:     {{.app.status.operationState.phase}}
+      Message:   {{.app.status.operationState.message}}
+    slack:
+      attachments: |
+        [{
+          "title":   "{{.app.metadata.name}} sync failed",
+          "color":   "#E96D76",
+          "fields":  [
+            {"title": "Project",  "value": "{{.app.spec.project}}",  "short": true},
+            {"title": "Revision", "value": "{{.app.status.operationState.syncResult.revision}}", "short": true}
+          ]
+        }]
+
+  template.app-health-degraded: |
+    message: |
+      {{.app.metadata.name}} health is DEGRADED.
+      Project:   {{.app.spec.project}}
+      Status:    {{.app.status.health.status}}
+      Message:   {{.app.status.health.message}}
+    slack:
+      attachments: |
+        [{
+          "title":   "{{.app.metadata.name}} health degraded",
+          "color":   "#F2C744",
+          "fields":  [
+            {"title": "Status",   "value": "{{.app.status.health.status}}",  "short": true},
+            {"title": "Message",  "value": "{{.app.status.health.message}}", "short": false}
+          ]
+        }]
+
+  # ----- Default subscriptions (per-Application annotations override) -----
+  # Every Application labelled team=multistate is subscribed to the
+  # two triggers below; this is the fallback for Applications that
+  # forget to annotate individually.
+  #
+  # Channel name: multistate-deploys-sravani-pothu, not the curriculum's
+  # generic "multistate-deploys" -- this workspace scopes channel names
+  # per engineer since multiple cohort members share one Slack org.
+  subscriptions: |
+    - recipients: [slack:multistate-deploys-sravani-pothu]
+      triggers:   [on-sync-failed, on-health-degraded]
+      selector:   "team=multistate"

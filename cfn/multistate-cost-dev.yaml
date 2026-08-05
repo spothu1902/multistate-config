@@ -151,6 +151,18 @@ Resources:
   # means something broke).
   EstimatedChargesAlarm:
     Type: AWS::CloudWatch::Alarm
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >-
+              The explicit AlarmName is a required contract, not
+              incidental: the Task 1 "Done when" check queries this
+              alarm by exact name (aws cloudwatch describe-alarms
+              --alarm-names multistate/estimated-charges-dev-sravani-pothu).
+              A CloudWatch alarm is stateless config with no data to
+              lose, so a name-driven replacement is harmless -- the
+              W28 replace-on-rename caution doesn't apply here.
     Properties:
       AlarmName: multistate/estimated-charges-dev-sravani-pothu
       AlarmDescription: !Sub "Account-wide EstimatedCharges > ${BillingAlarmUsd} USD."

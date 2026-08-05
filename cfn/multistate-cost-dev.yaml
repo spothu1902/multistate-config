@@ -1,0 +1,153 @@
+# cfn/multistate-cost-dev.yaml
+# TASK 1 (W6 D4) cost-governance stack over the W6 D3 substrate: an
+# SNS topic, a tag-scoped AWS Budget, and an account-wide CloudWatch
+# billing alarm. This governs AWS-resident spend (NAT gateway, RDS,
+# S3) -- the spend AWS billing CAN see. Anthropic (LLM) spend is NOT
+# AWS spend and is governed separately (an Anthropic Console workspace
+# spend limit + in-app cost log / X-Cost-Usd header in the app repo).
+#
+# Deploy with the same ChangeSet flow as the other three stacks:
+#   aws cloudformation create-change-set \
+#     --stack-name multistate-cost-dev-sravani-pothu \
+#     --change-set-name initial --change-set-type CREATE \
+#     --template-body file://cfn/multistate-cost-dev.yaml \
+#     --parameters ParameterKey=EnvName,ParameterValue=dev \
+#     --region us-east-1
+#   aws cloudformation describe-change-set ... # review
+#   aws cloudformation execute-change-set ...
+#
+# NOTE: deploying this stack requires budgets:* in addition to the
+# sns:*/cloudwatch:* already granted to this account's trainee groups.
+# The multistate-api-cfn-deploy-sravani-pothu OIDC role also has no
+# budgets:*/sns:*/cloudwatch:* today -- see INFRA.md for the access
+# request tracked against that gap.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate cost-governance stack -- AWS Budget + billing alarm + SNS.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment; scopes the tag-filtered Budget.
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 100
+    MinValue: 20
+    MaxValue: 100000
+    Description: >-
+      Monthly cost cap for resources tagged service=multistate env=dev.
+      A single dev NAT GW runs ~$32/mo (per the W6D3 SingleNatForDev
+      cost lever); $100 leaves headroom for RDS + S3 without masking a
+      real regression.
+  BillingAlarmUsd:
+    Type: Number
+    Default: 120
+    Description: >-
+      Account-wide EstimatedCharges guardrail threshold, USD. Set
+      above MonthlyBudgetUsd since this alarm is account-wide (every
+      classmate's stacks included), not tag-scoped -- see below.
+
+Resources:
+  # --- SNS topic: the shared notification sink for both the Budget
+  # and the billing alarm. KMS-encrypted at rest with the AWS-managed
+  # SNS key (no customer KMS key needed for a training account).
+  CostAlarmsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: multistate-cost-alarms-dev
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
+
+  # Without this policy, budgets.amazonaws.com / cloudwatch.amazonaws.com
+  # cannot publish to the topic -- the Budget or alarm reports healthy
+  # in the console while every notification silently drops. This is
+  # the single most common "green but dead" cost-governance mistake.
+  CostAlarmsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref CostAlarmsTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowBudgetsPublish
+            Effect: Allow
+            Principal: {Service: budgets.amazonaws.com}
+            Action: sns:Publish
+            Resource: !Ref CostAlarmsTopic
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal: {Service: cloudwatch.amazonaws.com}
+            Action: sns:Publish
+            Resource: !Ref CostAlarmsTopic
+
+  # --- Tag-scoped COST budget: sees ONLY resources tagged
+  # service=multistate env=dev (the NAT GW(s) tagged in
+  # multistate-network-dev.yaml and the RDS instance tagged in
+  # multistate-app-dev.yaml). This is the enforced guardrail on
+  # AWS-resident spend that Anthropic's own Console spend limit cannot
+  # provide, because AWS Budgets can only see AWS-billed spend.
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: multistate-monthly-cost-dev
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref MonthlyBudgetUsd, Unit: USD}
+        CostFilters:
+          TagKeyValue:
+            - "user:service$multistate"
+            - !Sub "user:env$${EnvName}"
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - {SubscriptionType: SNS, Address: !Ref CostAlarmsTopic}
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - {SubscriptionType: SNS, Address: !Ref CostAlarmsTopic}
+
+  # --- Account-wide guardrail. AWS/Billing EstimatedCharges publishes
+  # ONLY to us-east-1 and CANNOT be filtered by tag or by stack -- it
+  # covers the whole shared cohort account, every classmate's stacks
+  # included. That is exactly why the tag-scoped Budget above exists
+  # as the real per-service guardrail; this alarm is the backstop.
+  # Billing metrics only update ~every 6h, so missing data is the
+  # normal, expected state between updates -- TreatMissingData: ignore
+  # (the opposite of a metric-pipeline alarm, where silence usually
+  # means something broke).
+  EstimatedChargesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: multistate/estimated-charges-dev
+      AlarmDescription: !Sub "Account-wide EstimatedCharges > ${BillingAlarmUsd} USD."
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+        - {Name: Currency, Value: USD}
+      Statistic: Maximum
+      Period: 21600 # 6h
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingAlarmUsd
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: ignore
+      ActionsEnabled: true
+      AlarmActions: [!Ref CostAlarmsTopic]
+      OKActions: [!Ref CostAlarmsTopic]
+
+Outputs:
+  CostAlarmsTopicArn:
+    Value: !Ref CostAlarmsTopic
+    Export: {Name: !Sub "${AWS::StackName}-CostAlarmsTopicArn"}

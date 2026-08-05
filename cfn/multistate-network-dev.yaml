@@ -159,7 +159,15 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatEipA.AllocationId
       SubnetId:     !Ref PublicSubnetA
-      Tags: [{Key: Name, Value: !Sub "multistate-${EnvName}-nat-a"}]
+      Tags:
+        - {Key: Name,    Value: !Sub "multistate-${EnvName}-nat-a"}
+        # Cost-allocation taxonomy (W6D4 Task 1) -- the NAT GW is the
+        # headline dev line item (~$32/mo); these four keys are what
+        # let the tag-scoped Budget in multistate-cost-dev.yaml see it.
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   # NatGatewayB / NatGatewayC (with their EIPs) only materialise when
   # IsProdLike is true -- dev's private subnets B/C route through NAT A.
@@ -174,6 +182,11 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatEipB.AllocationId
       SubnetId:     !Ref PublicSubnetB
+      Tags:
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   NatEipC:
     Type: AWS::EC2::EIP
@@ -186,6 +199,11 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatEipC.AllocationId
       SubnetId:     !Ref PublicSubnetC
+      Tags:
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   # --- Public route table: 0.0.0.0/0 -> IGW. Shared across all 3 AZs.
   PublicRouteTable:

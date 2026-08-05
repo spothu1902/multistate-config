@@ -174,6 +174,13 @@ Resources:
       Tags:
         - {Key: Env,     Value: !Ref EnvName}
         - {Key: Project, Value: multistate}
+        # Cost-allocation taxonomy (W6D4 Task 1) -- lets the tag-scoped
+        # Budget in multistate-cost-dev.yaml see RDS spend once the
+        # account-level SCP block on rds:CreateDBInstance is lifted.
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
 Outputs:
   DbEndpoint:

@@ -47,6 +47,23 @@ Parameters:
       Account-wide EstimatedCharges guardrail threshold, USD. Set
       above MonthlyBudgetUsd since this alarm is account-wide (every
       classmate's stacks included), not tag-scoped -- see below.
+  CreateBudget:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Gates MonthlyCostBudget creation. Kept as a flag (rather than an
+      unconditional resource) because an earlier deploy attempt hit an
+      opaque AWS::EarlyValidation::ResourceExistenceCheck hook failure on
+      this resource type specifically, before this account's budgets:*
+      grant was fully in place -- the root cause turned out to be a
+      resource-name collision with another cohort member's live stack,
+      not the Budget resource type itself, but the flag is left in place
+      (default true) as a safety valve consistent with the
+      CreateDbInstance precedent in multistate-app-dev.yaml.
+
+Conditions:
+  ShouldCreateBudget: !Equals [!Ref CreateBudget, "true"]
 
 Resources:
   # --- SNS topic: the shared notification sink for both the Budget
@@ -55,7 +72,10 @@ Resources:
   CostAlarmsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: multistate-cost-alarms-dev
+      # -sravani-pothu suffix: bare multistate-cost-alarms-dev collided
+      # with another cohort member's live resource in this shared account
+      # (confirmed the hard way -- see INFRA.md).
+      TopicName: multistate-cost-alarms-dev-sravani-pothu
       KmsMasterKeyId: alias/aws/sns
       Tags:
         - {Key: service, Value: multistate}
@@ -93,9 +113,10 @@ Resources:
   # provide, because AWS Budgets can only see AWS-billed spend.
   MonthlyCostBudget:
     Type: AWS::Budgets::Budget
+    Condition: ShouldCreateBudget
     Properties:
       Budget:
-        BudgetName: multistate-monthly-cost-dev
+        BudgetName: multistate-monthly-cost-dev-sravani-pothu
         BudgetType: COST
         TimeUnit: MONTHLY
         BudgetLimit: {Amount: !Ref MonthlyBudgetUsd, Unit: USD}
@@ -131,7 +152,7 @@ Resources:
   EstimatedChargesAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: multistate/estimated-charges-dev
+      AlarmName: multistate/estimated-charges-dev-sravani-pothu
       AlarmDescription: !Sub "Account-wide EstimatedCharges > ${BillingAlarmUsd} USD."
       Namespace: AWS/Billing
       MetricName: EstimatedCharges

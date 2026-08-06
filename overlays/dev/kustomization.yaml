@@ -32,7 +32,7 @@ namespace: multistate-dev
 images:
   - name: uptimecrew/multistate-api
     newName: 267660182014.dkr.ecr.us-east-1.amazonaws.com/uptimecrew/multistate-api
-    newTag: w6d5-t3
+    newTag: w6d5-t3-fix
 
 # Per-env replica count -- dev runs at one replica.
 replicas:

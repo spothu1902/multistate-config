@@ -1,0 +1,23 @@
+# base/74-prometheus-adapter-values.yaml
+# TASK 2 (W6 D5): NOT applied via kustomize/kubectl apply -f base/ -- this is
+# a Helm values file for the prometheus-adapter chart, kept here so the
+# gitops repo is the single source of truth for the Adapter's custom-metrics
+# rule. Applied via:
+#   helm upgrade prom-adapter prometheus-community/prometheus-adapter \
+#     -n monitoring --values base/74-prometheus-adapter-values.yaml
+# Maps the Micrometer gauge multistate_inflight_requests into the
+# custom-metrics API so the HPA (base/50-...) can read it.
+prometheus:
+  url: http://kube-prometheus-stack-prometheus.monitoring.svc
+  port: 9090
+rules:
+  custom:
+    - seriesQuery: 'multistate_inflight_requests{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: namespace }
+          pod:       { resource: pod }
+      name:
+        matches: "multistate_inflight_requests"
+        as: "multistate_inflight_requests"
+      metricsQuery: 'avg_over_time(multistate_inflight_requests{<<.LabelMatchers>>}[1m])'

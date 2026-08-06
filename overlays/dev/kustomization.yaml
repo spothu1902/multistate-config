@@ -20,11 +20,19 @@ namespace: multistate-dev
 # The image lives in a private ECR repo (see application repo's
 # CLAUDE.md), never docker.io -- base/10-...deployment.yaml's
 # `uptimecrew/multistate-api:0.1.0` is rewritten to the full ECR URI.
-# fd677fa is the latest real tag pushed by CI as of this bootstrap.
+#
+# w6d5 (W6 D5): fd677fa's classpath is missing db/migration/V1__schema.sql
+# entirely -- a pre-existing defect in that build, surfaced when Postgres's
+# data was lost to an unrelated dev-cluster incident (see
+# multistate-api/SRE-CAPSTONE.md). w6d5 is a from-source rebuild off the
+# current main -- carries the correct V1 migration plus this week's worker
+# profile (Task 1) and InflightRequestsGauge (Task 2) -- pushed to this same
+# ECR repo and referenced here so the worker Deployment and the api
+# Deployment's custom metric are both live on this tag.
 images:
   - name: uptimecrew/multistate-api
     newName: 267660182014.dkr.ecr.us-east-1.amazonaws.com/uptimecrew/multistate-api
-    newTag: fd677fa
+    newTag: w6d5-t4-worker-fix
 
 # Per-env replica count -- dev runs at one replica.
 replicas:

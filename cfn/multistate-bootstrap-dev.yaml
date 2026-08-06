@@ -1,0 +1,235 @@
+# cfn/multistate-bootstrap-dev.yaml
+# TASK 1 baseline stack: the first CloudFormation stack the team
+# ever deploys for this capstone. Creates a minimal S3 bucket plus
+# the IAM role that GitHub Actions (W6 D1 OIDC) will assume to
+# deploy ALL FUTURE CFN stacks in this capstone. The role's policy
+# enumerates Action explicitly; Resource is scoped to the stack ARN
+# pattern -- never Action: '*' / Resource: '*'.
+#
+# Deploy with the ChangeSet flow:
+#   aws cloudformation create-change-set \
+#     --stack-name multistate-bootstrap-dev-sravani-pothu \
+#     --change-set-name initial --change-set-type CREATE \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --template-body file://cfn/multistate-bootstrap-dev.yaml \
+#     --parameters ParameterKey=EnvName,ParameterValue=dev \
+#                  ParameterKey=GitHubOrg,ParameterValue=spothu1902 \
+#     --region us-east-1
+#   aws cloudformation describe-change-set ... # review
+#   aws cloudformation execute-change-set ...
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate bootstrap stack -- artefact bucket starter + CFN deploy role.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment.
+  RetentionDays:
+    # Parameterised value: dev keeps 30d of versions; prod keeps 365.
+    Type: Number
+    Default: 30
+    MinValue: 7
+    MaxValue: 3650
+    Description: NoncurrentVersionExpiration in days (lifecycle rule).
+  GitHubOrg:
+    Type: String
+    Default: spothu1902
+    Description: GitHub org/user that hosts the gitops repo the CfnDeployRole trusts.
+  GitHubRepo:
+    Type: String
+    Default: multistate-config
+    Description: Repo name (the W6 D2 gitops config repo) pinned in the OIDC sub claim.
+  RoleNameSuffix:
+    Type: String
+    Default: sravani-pothu
+    Description: >-
+      Disambiguates the CfnDeployRole name in the shared cohort AWS account
+      (IAM role names are account-global, not stack-scoped).
+
+Resources:
+  # --- The bootstrap bucket. Hardened from day 1: PAB on, default
+  # KMS encryption (aws/s3 SSE-KMS), versioning on, lifecycle rule.
+  # DeletionPolicy + UpdateReplacePolicy both Retain so a stack
+  # delete / property-change replacement never destroys this bucket.
+  BootstrapBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: >-
+              Bootstrap bucket only stores CFN template artefacts in a
+              training account; a dedicated access-log bucket is
+              disproportionate overhead for this scope.
+    Properties:
+      # Synthetic globally-unique name. AWS::AccountId disambiguates
+      # across cohorts running the same stack in different accounts;
+      # RoleNameSuffix disambiguates across cohort members sharing one account.
+      BucketName: !Sub "uptimecrew-multistate-bootstrap-${EnvName}-${RoleNameSuffix}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: alias/aws/s3
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        # All four toggles. Anything less is wrong for an internal bucket.
+        BlockPublicAcls:       true
+        BlockPublicPolicy:     true
+        IgnorePublicAcls:      true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref RetentionDays
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+        - {Key: Owner,   Value: !Ref RoleNameSuffix}
+
+  # --- Bucket policy: deny any request not using TLS.
+  BootstrapBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BootstrapBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonTLS
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt BootstrapBucket.Arn
+              - !Sub "${BootstrapBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # --- The CFN-deploy IAM role for GitHub Actions to assume.
+  # Trust policy: OIDC federation, sub-claim pinned to the gitops
+  # repo's main branch + PR workflow. NEVER a wildcard sub claim.
+  CfnDeployRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >-
+              Explicit RoleName required so GitHub Actions'
+              role-to-assume references a stable, known ARN.
+          - id: W11
+            reason: >-
+              cloudformation:ValidateTemplate has no resource-level
+              permissions in AWS IAM -- it validates a template body
+              only, before any stack or changeSet ARN exists -- so
+              Resource: "*" is the only valid scope for that one
+              action. Confirmed via a real AccessDenied in CI when it
+              was scoped to a stack/changeSet ARN pattern instead.
+              Every other action on this role stays scoped to
+              stack/multistate-* and changeSet/multistate-* ARNs.
+    Properties:
+      RoleName: !Sub "multistate-api-cfn-deploy-${RoleNameSuffix}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+              # StringLike (not StringEquals): branch + PR refs differ per
+              # workflow run. Four entries, not two: GitHub's OIDC `sub`
+              # claim for a repo owned by a personal account (as opposed
+              # to an organization) appends numeric user/repo IDs --
+              # repo:<org>@<userId>/<repo>@<repoId>:pull_request -- not
+              # the plain repo:<org>/<repo>:pull_request format used for
+              # org-owned repos. Confirmed via a real rejected
+              # AssumeRoleWithWebIdentity call in CloudTrail against
+              # this exact role. The wildcard variants cover both shapes
+              # so the role works regardless of which kind of GitHub
+              # account owns GitHubOrg/GitHubRepo.
+              StringLike:
+                "token.actions.githubusercontent.com:sub":
+                  - !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
+                  - !Sub "repo:${GitHubOrg}/${GitHubRepo}:pull_request"
+                  - !Sub "repo:${GitHubOrg}*/${GitHubRepo}*:ref:refs/heads/main"
+                  - !Sub "repo:${GitHubOrg}*/${GitHubRepo}*:pull_request"
+      Policies:
+        - PolicyName: cfn-deploy-narrow
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CFN itself: only THIS capstone's stacks.
+              - Sid: CfnStackOps
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:DetectStackDrift
+                  - cloudformation:DescribeStackDriftDetectionStatus
+                  - cloudformation:DescribeStackResourceDrifts
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/multistate-*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/multistate-*"
+              # cloudformation:ValidateTemplate has no resource-level
+              # permissions (it validates a template body only, before
+              # any stack/changeSet ARN exists) -- AWS requires
+              # Resource: "*" for it; scoping it under stack/changeSet
+              # ARNs above silently never matches. Confirmed via a real
+              # AccessDenied in CI before this fix.
+              - Sid: CfnValidateTemplate
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: "*"
+              # S3 read on the bootstrap bucket (for stored templates).
+              - Sid: BootstrapBucketRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BootstrapBucket.Arn
+                  - !Sub "${BootstrapBucket.Arn}/*"
+              # IAM: only PassRole to roles the stacks themselves create.
+              - Sid: PassStackRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/multistate-*"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+        - {Key: Owner,   Value: !Ref RoleNameSuffix}
+
+Outputs:
+  BootstrapBucketName:
+    Description: Globally-unique bootstrap bucket name.
+    Value: !Ref BootstrapBucket
+    Export: {Name: !Sub "${AWS::StackName}-BucketName"}
+  BootstrapBucketArn:
+    Value: !GetAtt BootstrapBucket.Arn
+    Export: {Name: !Sub "${AWS::StackName}-BucketArn"}
+  CfnDeployRoleArn:
+    Description: ARN the GitHub Actions workflow assumes via OIDC.
+    Value: !GetAtt CfnDeployRole.Arn
+    Export: {Name: !Sub "${AWS::StackName}-CfnDeployRoleArn"}

@@ -1,0 +1,192 @@
+# cfn/multistate-app-dev.yaml
+# TASK 3 application stack: an RDS PostgreSQL instance + a Secrets
+# Manager secret holding the master credentials, plus the DB security
+# group and DB subnet group. Consumes the network stack's exports via
+# !ImportValue -- NEVER hardcode subnet/SG IDs, since cross-stack
+# references are how a network rebuild avoids stale ID drift. The DB
+# master password is NEVER passed as a Parameter (NoEcho or not); it
+# lives in Secrets Manager and is resolved at deploy time via the
+# {{resolve:secretsmanager:...}} dynamic reference. Stateful resources
+# carry BOTH DeletionPolicy: Retain AND UpdateReplacePolicy: Retain.
+#
+# Prereq (one-time, out-of-band, NOT in this template):
+#   aws secretsmanager create-secret \
+#     --name multistate/dev/db-master-sravani-pothu \
+#     --secret-string '{"password": "REPLACE_ME_LOCAL_DEV_ONLY"}' \
+#     --region us-east-1
+#
+# Deploy with the ChangeSet flow:
+#   aws cloudformation create-change-set \
+#     --stack-name multistate-app-dev-sravani-pothu \
+#     --change-set-name initial --change-set-type CREATE \
+#     --template-body file://cfn/multistate-app-dev.yaml \
+#     --parameters ParameterKey=EnvName,ParameterValue=dev \
+#     --region us-east-1
+#   aws cloudformation describe-change-set ... # review
+#   aws cloudformation execute-change-set ...
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate application stack -- RDS + Secrets Manager.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment.
+  NetworkStackName:
+    Type: String
+    Default: multistate-network-dev-sravani-pothu
+    Description: Name of the network stack whose exports we !ImportValue.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.small
+    AllowedValues: [db.t4g.small, db.t4g.medium, db.m6g.large]
+    Description: RDS instance class.
+  CreateDbInstance:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Gates DbInstance creation. Default false: an AWS Organization SCP
+      in this shared cohort account denies rds:CreateDBInstance for
+      every IAM user (confirmed via a real deploy attempt, not just an
+      IAM policy read) -- not a template or role defect. Flip to true
+      once that guardrail is lifted. DbSubnetGroup, DbSecurityGroup,
+      and AppToDbEgress deploy unconditionally regardless of this
+      flag; they cost nothing and are what prove the !ImportValue
+      cross-stack wiring resolves correctly.
+
+Conditions:
+  # ShouldCreateDbInstance: gates the actual RDS instance behind the
+  # CreateDbInstance parameter (default false). An AWS Organization
+  # SCP in this shared account denies rds:CreateDBInstance outright;
+  # DbSubnetGroup/DbSecurityGroup/AppToDbEgress stay unconditional
+  # since they cost nothing and already prove the cross-stack
+  # !ImportValue wiring resolves correctly.
+  ShouldCreateDbInstance: !Equals [!Ref CreateDbInstance, "true"]
+
+Resources:
+  # --- DB subnet group spanning the private subnets imported from
+  # the network stack. !Split + !ImportValue is the cross-stack pattern.
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "multistate ${EnvName} private subnets"
+      SubnetIds:
+        !Split
+          - ","
+          - !ImportValue
+            "Fn::Sub": "${NetworkStackName}-PrivateSubnets"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- DB security group: ingress 5432 only from the app SG.
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "multistate ${EnvName} DB SG (5432 from app SG only)."
+      VpcId:
+        !ImportValue
+          "Fn::Sub": "${NetworkStackName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol:             tcp
+          FromPort:               5432
+          ToPort:                 5432
+          SourceSecurityGroupId:
+            !ImportValue
+              "Fn::Sub": "${NetworkStackName}-AppSgId"
+          Description: Postgres from app SG only.
+      # Explicit no-op egress: an RDS instance never initiates its own
+      # outbound connections, so egress is pinned to a non-routable
+      # loopback address instead of leaving CFN's implicit
+      # allow-all-outbound default in place.
+      SecurityGroupEgress:
+        - IpProtocol:   "-1"
+          CidrIp:       127.0.0.1/32
+          Description:  No egress needed; RDS does not initiate outbound connections.
+      Tags:
+        - {Key: Name, Value: !Sub "multistate-${EnvName}-db-sg"}
+
+  # --- Completes the app SG's egress side, deferred by the network
+  # stack (Task 2) because this DB SG didn't exist yet at that point.
+  # A real SG-to-SG rule -- not a CIDR workaround -- now that both
+  # SGs exist.
+  AppToDbEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId:
+        !ImportValue
+          "Fn::Sub": "${NetworkStackName}-AppSgId"
+      IpProtocol:                tcp
+      FromPort:                  5432
+      ToPort:                    5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+      Description: Postgres egress to the RDS DB SG only.
+
+  # --- The RDS instance itself. Stateful: Retain on BOTH policies.
+  # MasterUsername + MasterUserPassword come from Secrets Manager
+  # via dynamic reference; the password never appears in CFN state.
+  # Condition: gated behind CreateDbInstance -- see the parameter's
+  # Description for why (a real deploy attempt hit an org-level SCP
+  # deny on rds:CreateDBInstance in this shared account).
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    Condition: ShouldCreateDbInstance
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W78
+            reason: >-
+              Automated RDS backups (BackupRetentionPeriod: 7) are in
+              place; snapshot-based point-in-time restore is
+              sufficient for this Day-3 training scope.
+          - id: W28
+            reason: >-
+              Explicit DBInstanceIdentifier required so the identifier
+              is discoverable/auditable by name in the shared cohort
+              account, consistent with the naming convention used
+              elsewhere in this capstone.
+    Properties:
+      DBInstanceIdentifier:  !Sub "multistate-${EnvName}-sravani-pothu"
+      Engine:                postgres
+      EngineVersion:         "16.14"
+      DBInstanceClass:       !Ref DbInstanceClass
+      AllocatedStorage:      "20"
+      StorageType:           gp3
+      StorageEncrypted:      true
+      DBSubnetGroupName:     !Ref DbSubnetGroup
+      VPCSecurityGroups:     [!Ref DbSecurityGroup]
+      PubliclyAccessible:    false
+      MultiAZ:               false
+      BackupRetentionPeriod: 7
+      DeletionProtection:    true
+      # Dynamic resolution -- the curriculum-correct master-credential
+      # pattern. CFN never sees the plaintext password; it's resolved
+      # by the CloudFormation service at deploy time only. The secret
+      # name is a literal here (not parameterised): dynamic references
+      # must appear as a literal {{resolve:...}} pattern in the
+      # property value -- Fn::Sub can't build it from a Parameter.
+      MasterUsername: "{{resolve:secretsmanager:multistate/dev/db-master-sravani-pothu:SecretString:username}}"
+      MasterUserPassword: "{{resolve:secretsmanager:multistate/dev/db-master-sravani-pothu:SecretString:password}}"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+        # Cost-allocation taxonomy (W6D4 Task 1) -- lets the tag-scoped
+        # Budget in multistate-cost-dev.yaml see RDS spend once the
+        # account-level SCP block on rds:CreateDBInstance is lifted.
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
+
+Outputs:
+  DbEndpoint:
+    Condition: ShouldCreateDbInstance
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export: {Name: !Sub "${AWS::StackName}-DbEndpoint"}
+  DbSecurityGroupId:
+    Value: !Ref DbSecurityGroup
+    Export: {Name: !Sub "${AWS::StackName}-DbSecurityGroupId"}

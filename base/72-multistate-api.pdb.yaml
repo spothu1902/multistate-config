@@ -1,0 +1,13 @@
+# base/72-multistate-api.pdb.yaml
+# TASK 2 (W6 D5): protect the floor. minAvailable matches the HPA
+# minReplicas so a voluntary disruption (node drain, consolidation)
+# never takes the service below three serving pods.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: multistate-api-pdb
+  namespace: multistate-dev
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels: {app.kubernetes.io/name: multistate-api}

@@ -15,3 +15,9 @@ resources:
   - 50-multistate-api.hpa.yaml
   - 60-multistate-api.ingress.yaml
   - 70-multistate-api.servicemonitor.yaml
+  - 71-multistate-worker.deployment.yaml
+  - 72-multistate-api.pdb.yaml
+  - 73-multistate-worker.scaledobject.yaml
+  # 74-prometheus-adapter-values.yaml is a Helm values file, not a K8s
+  # manifest -- deliberately excluded from `resources:` (kustomize would
+  # try and fail to parse it as an API object).
